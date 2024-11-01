@@ -142,7 +142,36 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+push() {
+    local ipa_path="./build/$scheme.ipa"  # 假设生成的 ipa 文件路径
+
+    if [ ! -f "$ipa_path" ]; then
+        echo "找不到 .ipa 文件，请确保已成功构建。"
+        exit 1
+    fi
+
+    # 提示用户输入 Apple ID
+    read -p "请输入 Apple ID: " username
+
+    # 隐藏输入提示用户输入 App 专用密码
+    read -s -p "请输入 App 专用密码: " app_password
+    echo  # 换行
+
+    echo "开始将 .ipa 文件上传到 App Store Connect..."
+
+    xcrun altool --upload-app -f "$ipa_path" -t ios -u "$username" -p "$app_password" --verbose
+
+    if [ $? -eq 0 ]; then
+        echo "上传成功！"
+    else
+        echo "上传失败，请检查错误信息。"
+        exit 1
+    fi
+}
+
 # 执行 build 操作
 if [[ "$command" == "build" ]]; then
     build "$tag" "$destination"
+elif [[ "$command" == "push" ]]; then
+    push
 fi
