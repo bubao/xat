@@ -1,0 +1,148 @@
+#!/bin/bash
+
+CONFIG_FILE="$HOME/.xatrc"
+
+# 检查是否配置了 API_KEY
+check_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "配置文件 $CONFIG_FILE 不存在，请先配置。"
+        exit 1
+    fi
+
+    source "$CONFIG_FILE"
+    # if [ -z "$API_KEY" ]; then
+    #     echo "API_KEY 未配置，请在配置文件中添加。"
+    #     exit 1
+    # fi
+}
+
+# 自动获取 Scheme 名称
+get_scheme_name() {
+    local scheme=$(xcodebuild -list -project *.xcodeproj 2>/dev/null | awk '/Schemes:/ {getline; print}' | xargs)
+    echo "$scheme"
+}
+
+# 检查 Xcode 环境
+check_xcode_environment() {
+    if ! command -v xcodebuild &> /dev/null; then
+        echo "Xcode 未安装，请安装 Xcode 后再运行此命令。"
+        exit 1
+    fi
+
+    # 检查 Xcode 是否需要更新
+    xcodebuild -runFirstLaunch &> /dev/null
+    if [ $? -ne 0 ]; then
+        echo "Xcode 需要更新或初始化。请在 Xcode 中完成首次运行设置。"
+        exit 1
+    fi
+}
+
+build() {
+    local tag="$1"
+    local destination="$2"
+    local current_branch=$(git rev-parse --abbrev-ref HEAD)
+    local scheme=$(get_scheme_name)
+
+    if [ -z "$scheme" ]; then
+        echo "未找到 Scheme，请确保项目包含有效的 Scheme。"
+        exit 1
+    fi
+
+    if [ -n "$tag" ]; then
+        echo "切换到指定 tag：$tag"
+        git checkout "$tag"
+    else
+        echo "使用当前分支 $current_branch 进行构建"
+    fi
+
+    # 如果没有指定 destination，则尝试查找可用设备
+    if [ -z "$destination" ]; then
+        echo "未指定 destination，查找可用的设备..."
+        destination=$(xcrun simctl list devices | grep "iPhone " | grep "Booted" | awk -F'[' '{print $2}' | awk -F']' '{print $1}' | head -n 1)
+
+        if [ -z "$destination" ]; then
+            destination=$(xcrun simctl list devices | grep "iPad " | grep "Booted" | awk -F'[' '{print $2}' | awk -F']' '{print $1}' | head -n 1)
+        fi
+
+        if [ -z "$destination" ]; then
+            echo "没有找到已启动的模拟器，尝试启动一个 iPhone 16 模拟器..."
+            if xcrun simctl list devices | grep -q "iPhone 16"; then
+                xcrun simctl boot "iPhone 16" &> /dev/null
+                sleep 5 
+
+                if xcrun simctl list devices | grep -q "iPhone 16.*Booted"; then
+                    destination="platform=iOS Simulator,name=iPhone 16,OS=18.0"
+                else
+                    echo "启动 iPhone 16 模拟器失败，可能它已经处于 Booted 状态。"
+                    exit 1
+                fi
+            else
+                echo "iPhone 16 模拟器不存在，请检查模拟器配置。"
+                exit 1
+            fi
+        fi
+
+        if [ -z "$destination" ]; then
+            echo "没有可用的 iOS 模拟器，无法继续构建。"
+            exit 1
+        fi
+
+        echo "使用默认设置：$destination"
+    else
+        echo "使用指定的 destination：$destination"
+    fi
+
+    local derived_data_path="./build"
+    local archive_path="./build/$scheme.xcarchive"
+
+    echo "正在构建项目，使用 Scheme：$scheme，Destination：$destination"
+    xcodebuild -scheme "$scheme" -configuration Release -destination "$destination" -derivedDataPath "$derived_data_path" 
+	archive -archivePath "$archive_path" -allowProvisioningUpdates -verbose
+
+    echo "Archive path: $archive_path"
+
+    # echo "导出 .ipa 文件..."
+    xcodebuild -exportArchive -archivePath "$archive_path" -exportOptionsPlist ./exportOptions.plist -exportPath "./build"
+
+    if [ -n "$tag" ]; then
+        git checkout "$current_branch"
+    fi
+}
+
+
+# 主执行逻辑
+check_config
+check_xcode_environment
+
+# 处理命令行参数
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        build)
+            command="build"
+            ;;
+        push)
+            command="push"
+            ;;
+        config)
+            command="config"
+            ;;
+        -t) # 处理 tag
+            tag="$2"
+            shift
+            ;;
+        -d) # 处理 destination
+            destination="$2"
+            shift
+            ;;
+        *)
+            echo "用法：xat {build|push|config} [-t tag] [-d destination]"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# 执行 build 操作
+if [[ "$command" == "build" ]]; then
+    build "$tag" "$destination"
+fi
